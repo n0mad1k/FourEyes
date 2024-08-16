@@ -1,0 +1,303 @@
+---
+- name: Create and configure Linode instance Intel Server
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars_files:
+    - vars.yaml
+  vars:
+    ansible_python_interpreter: /home/n0m4d1k/Tools/FourEyes/venv/bin/python3.12
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+  tasks:
+    - name: Create a Linode instance
+      community.general.linode_v4:
+        access_token: "{{ linode_token }}"
+        label: "4eyes-server"
+        type: "{{ plan }}"
+        region: "{{ region }}"
+        image: "{{ image }}"
+        root_pass: "{{ linode_root_pass }}"
+        authorized_keys: 
+          - "{{ lookup('file', ssh_key_path) }}"
+        state: present
+      register: linode_instance
+      failed_when: linode_instance is not defined or linode_instance.instance.ipv4 is not defined
+
+    - name: Wait for the Linode instance to be reachable
+      wait_for:
+        host: "{{ linode_instance.instance.ipv4[0] }}"
+        port: 22
+        delay: 60
+        timeout: 600
+        state: started
+
+    - name: Add the Linode instance to the inventory
+      add_host:
+        name: "element-server"
+        ansible_host: "{{ linode_instance.instance.ipv4[0] }}"
+        ansible_user: root
+
+- name: Setup and secure Linode instance - Part 2
+  hosts: element-server
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
+    matrix_base_url: "http://{{ ansible_host }}"
+    matrix_server_name: "{{ ansible_host }}"
+  tasks:
+    - name: Disable password authentication for SSH
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+        state: present
+
+    - name: Restart SSH service
+      ansible.builtin.service:
+        name: ssh
+        state: restarted
+
+    - name: Update apt package list
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install nginx
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+
+    - name: Add Matrix Synapse GPG key and repository
+      ansible.builtin.shell: |
+        wget -qO /usr/share/keyrings/matrix-org-archive-keyring.gpg https://packages.matrix.org/debian/matrix-org-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/matrix-org-archive-keyring.gpg] https://packages.matrix.org/debian/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/matrix-org.list
+
+    - name: Update apt package list again
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install Matrix Synapse
+      ansible.builtin.apt:
+        name: matrix-synapse-py3
+        state: present
+
+    - name: Remove existing homeserver.yaml
+      ansible.builtin.file:
+        path: /etc/matrix-synapse/homeserver.yaml
+        state: absent
+
+    - name: Create a new homeserver.yaml with dynamic server name
+      ansible.builtin.copy:
+        dest: /etc/matrix-synapse/homeserver.yaml
+        content: |
+          server_name: "{{ matrix_server_name }}"
+          public_baseurl: "https://{{ matrix_server_name }}/"
+          pid_file: "/var/run/matrix-synapse.pid"
+          listeners:
+            - port: 8008
+              tls: false
+              type: http
+              x_forwarded: true
+              bind_addresses: ['::', '0.0.0.0']
+              resources:
+                - names: [client, federation]
+                  compress: false
+          database:
+            name: sqlite3
+            args:
+              database: /var/lib/matrix-synapse/homeserver.db
+          log_config: "/etc/matrix-synapse/log.yaml"
+          media_store_path: /var/lib/matrix-synapse/media
+          signing_key_path: "/etc/matrix-synapse/homeserver.signing.key"
+          trusted_key_servers:
+            - server_name: "matrix.org"
+          macaroon_secret_key: "{{ macaroon_secret_key }}"
+          form_secret: "{{ form_secret }}"
+          report_stats: false
+          suppress_key_server_warning: true
+      notify: Restart Matrix Synapse
+
+    - name: Set correct ownership for Matrix Synapse directory
+      ansible.builtin.file:
+        path: /var/lib/matrix-synapse
+        state: directory
+        owner: matrix-synapse
+        group: matrix-synapse
+        mode: '0750'
+        recurse: yes
+
+    - name: Set correct ownership for Matrix Synapse log directory
+      ansible.builtin.file:
+        path: /var/log/matrix-synapse
+        state: directory
+        owner: matrix-synapse
+        group: matrix-synapse
+        mode: '0750'
+        recurse: yes
+
+    - name: Set the server name in server_name.yaml
+      ansible.builtin.lineinfile:
+        path: /etc/matrix-synapse/conf.d/server_name.yaml
+        regexp: '^server_name:.*'
+        line: 'server_name: "{{ matrix_server_name }}"'
+        state: present
+      notify: Restart Matrix Synapse
+
+    - name: Ensure /var/www/element directory exists
+      ansible.builtin.file:
+        path: /var/www/element
+        state: directory
+        mode: '0755'
+
+    - name: Get the latest Element version
+      shell: |
+        curl --silent "https://api.github.com/repositories/39487546/releases/latest" |
+        grep '"tag_name":' |
+        sed -E 's/.*"([^"]+)".*/\1/'
+      register: element_version
+      failed_when: element_version.stdout is undefined or element_version.stdout == ""
+
+    - name: Download and extract Element pre-built binaries
+      ansible.builtin.unarchive:
+        src: https://github.com/vector-im/element-web/releases/download/{{ element_version.stdout }}/element-{{ element_version.stdout }}.tar.gz
+        dest: /var/www/element
+        remote_src: yes
+        creates: /var/www/element/element-{{ element_version.stdout }}/index.html
+
+    - name: Configure Nginx for Element
+      ansible.builtin.template:
+        src: nginx/element.conf.j2
+        dest: /etc/nginx/sites-available/element
+      notify:
+        - Reload Nginx
+
+    - name: Enable Nginx site
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/element
+        dest: /etc/nginx/sites-enabled/element
+        state: link
+      notify:
+        - Reload Nginx
+
+    - name: Disable default Nginx site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify:
+        - Reload Nginx
+
+    - name: Create a directory for SSL certificates
+      ansible.builtin.file:
+        path: /etc/ssl/private
+        state: directory
+        mode: '0700'
+
+    - name: Generate a private key
+      ansible.builtin.command: >
+        openssl genpkey -algorithm RSA
+        -out /etc/ssl/private/nginx-selfsigned.key
+        -pkeyopt rsa_keygen_bits:4096
+
+    - name: Generate a self-signed SSL certificate for Nginx
+      ansible.builtin.command: >
+        openssl req -new -newkey rsa:4096 -days 365 -nodes -x509
+        -keyout /etc/ssl/private/nginx-selfsigned.key
+        -out /etc/ssl/certs/nginx-selfsigned.crt
+        -subj "/CN={{ matrix_server_name }}"
+
+    - name: Configure Nginx for SSL
+      ansible.builtin.template:
+        src: nginx/element.conf.j2
+        dest: /etc/nginx/sites-available/element
+      notify:
+        - Reload Nginx
+
+    - name: Configure Element config.json
+      ansible.builtin.copy:
+        dest: /var/www/element/element-{{ element_version.stdout }}/config.json
+        content: |
+          {
+              "default_server_config": {
+                  "m.homeserver": {
+                      "base_url": "https://{{ matrix_base_url }}",
+                      "server_name": "{{ matrix_server_name }}"
+                  }
+              },
+              "disable_guests": true,
+              "disable_login_language_selector": false,
+              "disable_custom_urls": false,
+              "brand": "Element",
+              "default_federate": true,
+              "default_theme": "dark",
+              "room_directory": {
+                  "servers": [
+                      "{{ matrix_server_name }}"
+                  ]
+              },
+              "features": {
+                  "feature_discord": true
+              }
+          }
+    
+    - name: Wait for Matrix Synapse to be ready
+      wait_for:
+        host: localhost
+        port: 8008
+        delay: 10
+        timeout: 300
+        state: started
+
+    - name: Register admin user for Matrix Synapse
+      ansible.builtin.command:
+        cmd: register_new_matrix_user -u {{ matrix_admin_user }} -p {{ matrix_admin_password }} -a -k {{ registration_shared_secret }} https://localhost:8448
+      args:
+        creates: "/var/lib/matrix-synapse/admin_created"
+      environment:
+        SYNAPSE_CONFIG_PATH: /etc/matrix-synapse/homeserver.yaml
+      register: admin_user_created
+      ignore_errors: yes
+
+    - name: Install Fail2Ban
+      ansible.builtin.apt:
+        name: fail2ban
+        state: present
+
+    - name: Configure Fail2Ban for SSH
+      ansible.builtin.template:
+        src: fail2ban/jail.local.j2
+        dest: /etc/fail2ban/jail.local
+      notify:
+        - Restart Fail2Ban
+
+    - name: Enable automatic security updates
+      ansible.builtin.apt:
+        name: unattended-upgrades
+        state: present
+
+    - name: Configure unattended-upgrades
+      ansible.builtin.template:
+        src: unattended-upgrades/50unattended-upgrades.j2
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades
+      notify:
+        - Restart Unattended Upgrades
+
+  handlers:
+    - name: Reload Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+
+    - name: Restart Fail2Ban
+      ansible.builtin.service:
+        name: fail2ban
+        state: restarted
+
+    - name: Restart Unattended Upgrades
+      ansible.builtin.service:
+        name: unattended-upgrades
+        state: restarted
+
+    - name: Restart Matrix Synapse
+      ansible.builtin.service:
+        name: matrix-synapse
+        state: restarted

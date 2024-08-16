@@ -1,0 +1,24 @@
+server {
+    listen 443 ssl;
+    server_name {{ matrix_server_name }};
+
+    ssl_certificate /etc/ssl/certs/nginx-selfsigned.crt;
+    ssl_certificate_key /etc/ssl/private/nginx-selfsigned.key;
+
+    root /var/www/element/element-{{ element_version.stdout }};
+    index index.html;
+
+    # Serve Element UI
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    # Proxy requests to Matrix Synapse
+    location /_matrix/ {
+        proxy_pass http://localhost:8008;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header Host $host;
+        proxy_buffering off;
+        client_max_body_size 50M;
+    }
+}
