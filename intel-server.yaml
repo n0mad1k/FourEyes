@@ -98,7 +98,7 @@
               tls: false
               type: http
               x_forwarded: true
-              bind_addresses: ['::', '0.0.0.0']
+              bind_addresses: ['::1', '127.0.0.1']
               resources:
                 - names: [client, federation]
                   compress: false
@@ -113,6 +113,7 @@
             - server_name: "matrix.org"
           macaroon_secret_key: "{{ macaroon_secret_key }}"
           form_secret: "{{ form_secret }}"
+          registration_shared_secret: "{{ registration_shared_secret }}"
           report_stats: false
           suppress_key_server_warning: true
       notify: Restart Matrix Synapse
@@ -134,6 +135,14 @@
         group: matrix-synapse
         mode: '0750'
         recurse: yes
+
+    - name: Ensure the homeserver.log file exists with correct permissions
+      ansible.builtin.file:
+        path: /var/log/matrix-synapse/homeserver.log
+        state: touch
+        owner: matrix-synapse
+        group: matrix-synapse
+        mode: '0640'
 
     - name: Set the server name in server_name.yaml
       ansible.builtin.lineinfile:
@@ -186,12 +195,6 @@
       notify:
         - Reload Nginx
 
-    - name: Create a directory for SSL certificates
-      ansible.builtin.file:
-        path: /etc/ssl/private
-        state: directory
-        mode: '0700'
-
     - name: Generate a private key
       ansible.builtin.command: >
         openssl genpkey -algorithm RSA
@@ -204,6 +207,42 @@
         -keyout /etc/ssl/private/nginx-selfsigned.key
         -out /etc/ssl/certs/nginx-selfsigned.crt
         -subj "/CN={{ matrix_server_name }}"
+
+    - name: Ensure the matrix-ssl group exists
+      ansible.builtin.group:
+        name: matrix-ssl
+        state: present
+
+    - name: Add matrix-synapse user to matrix-ssl group
+      ansible.builtin.user:
+        name: matrix-synapse
+        groups: matrix-ssl
+        append: yes
+
+    - name: Add www-data user to matrix-ssl group (for Nginx)
+      ansible.builtin.user:
+        name: www-data
+        groups: matrix-ssl
+        append: yes
+
+    - name: Change group ownership of SSL key file
+      ansible.builtin.file:
+        path: /etc/ssl/private/nginx-selfsigned.key
+        owner: root
+        group: matrix-ssl
+        mode: '0640'
+
+    - name: Change group ownership of SSL certificate file
+      ansible.builtin.file:
+        path: /etc/ssl/certs/nginx-selfsigned.crt
+        owner: root
+        group: matrix-ssl
+        mode: '0644'
+
+    - name: Ensure correct permissions on /etc/ssl/private directory
+      ansible.builtin.file:
+        path: /etc/ssl/private
+        mode: '0750'
 
     - name: Configure Nginx for SSL
       ansible.builtin.template:
@@ -219,7 +258,7 @@
           {
               "default_server_config": {
                   "m.homeserver": {
-                      "base_url": "https://{{ matrix_base_url }}",
+                      "base_url": "https://{{ base_url }}",
                       "server_name": "{{ matrix_server_name }}"
                   }
               },
@@ -249,7 +288,7 @@
 
     - name: Register admin user for Matrix Synapse
       ansible.builtin.command:
-        cmd: register_new_matrix_user -u {{ matrix_admin_user }} -p {{ matrix_admin_password }} -a -k {{ registration_shared_secret }} https://localhost:8448
+        cmd: register_new_matrix_user -u {{ matrix_admin_user }} -p {{ matrix_admin_password }} -a -k {{ registration_shared_secret }} http://localhost:8008
       args:
         creates: "/var/lib/matrix-synapse/admin_created"
       environment:
