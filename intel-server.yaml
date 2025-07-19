@@ -6,7 +6,7 @@
   vars_files:
     - vars.yaml
   vars:
-    ansible_python_interpreter: /home/n0m4d1k/Tools/FourEyes/venv/bin/python3.12
+    ansible_python_interpreter: "{{ playbook_dir }}/venv/bin/python3"
     ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
   tasks:
     - name: Create a Linode instance
