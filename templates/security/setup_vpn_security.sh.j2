@@ -1,0 +1,118 @@
+#!/bin/bash
+# VPN Security Setup for FourEyes using Tailscale
+
+echo "🔒 Setting up VPN security for FourEyes..."
+
+# Install Tailscale
+curl -fsSL https://tailscale.com/install.sh | sh
+
+# Check if auth key is provided
+{% if tailscale_auth_key is defined and tailscale_auth_key %}
+echo "🔑 Using provided Tailscale auth key..."
+tailscale up --authkey={{ tailscale_auth_key }} --accept-routes --accept-dns=false --hostname=foureyes-intel
+echo "✅ Tailscale connected automatically"
+{% else %}
+echo "⚠️  No Tailscale auth key provided."
+echo "To connect to Tailscale later, run:"
+echo "sudo tailscale up --accept-routes --accept-dns=false --hostname=foureyes-intel"
+echo "Then authenticate via the URL provided."
+{% endif %}
+
+# Create VPN-only nginx configuration (simplified without rate limiting)
+cat > /etc/nginx/sites-available/foureyes-vpn << 'EOF'
+# VPN-Only Secure FourEyes Server (Port 8443)
+server {
+    listen 8443 ssl http2;
+    server_name {{ matrix_server_name }} {{ matrix_server_name }}.ts.net _;
+
+    # Enhanced SSL/TLS Configuration
+    ssl_certificate /etc/ssl/certs/foureyes.crt;
+    ssl_certificate_key /etc/ssl/private/foureyes.key;
+    ssl_protocols TLSv1.3 TLSv1.2;
+    ssl_ciphers ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+    ssl_session_tickets off;
+
+    # VPN Access Control at nginx level
+    allow 100.64.0.0/10;    # Primary Tailscale range
+    allow 100.0.0.0/8;      # Extended Tailscale range for edge cases
+    deny all;
+
+    # Security Headers
+    add_header X-Frame-Options SAMEORIGIN always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    root /var/www/element/element-{{ element_version.stdout }};
+    index index.html;
+
+    # Element web client
+    location / {
+        try_files $uri $uri/ @matrix;
+        
+        # Cache static assets
+        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+    }
+
+    # Proxy Matrix API requests to Synapse
+    location @matrix {
+        proxy_pass http://127.0.0.1:8008;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        client_max_body_size 50M;
+    }
+
+    # Matrix API
+    location /_matrix/ {
+        proxy_pass http://127.0.0.1:8008;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        client_max_body_size 50M;
+    }
+
+    # Serve CA certificate for client installation
+    location /ca/ {
+        alias /var/www/ca-download/;
+        autoindex on;
+        add_header Content-Type application/x-pem-file;
+        add_header Content-Disposition "attachment";
+    }
+
+    access_log /var/log/nginx/foureyes_vpn.log combined;
+    error_log /var/log/nginx/foureyes_vpn_error.log warn;
+}
+EOF
+
+# Generate enhanced certificates for VPN access
+openssl req -new -newkey rsa:4096 -days 365 -nodes -x509 \
+    -keyout /etc/ssl/private/foureyes.key \
+    -out /etc/ssl/certs/foureyes.crt \
+    -subj "/CN={{ matrix_server_name }}/O=FourEyes Intelligence/C=US"
+
+# Create CA certificate directory for downloads
+mkdir -p /var/www/ca-download
+cp /etc/ssl/certs/foureyes.crt /var/www/ca-download/foureyes-ca.pem
+chmod 644 /var/www/ca-download/foureyes-ca.pem
+
+# Enable VPN site
+ln -sf /etc/nginx/sites-available/foureyes-vpn /etc/nginx/sites-enabled/
+
+# Update UFW for VPN port
+ufw allow 8443/tcp
+
+echo "✅ VPN security setup completed!"
+echo "🔗 Connect to Tailscale and access via: https://[TAILSCALE-IP]:8443"
+echo "📋 Download CA certificate from: https://[TAILSCALE-IP]:8443/ca/"

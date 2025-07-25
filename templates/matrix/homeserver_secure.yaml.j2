@@ -1,0 +1,75 @@
+server_name: "{{ matrix_server_name }}"
+public_baseurl: "https://{{ matrix_server_name }}/"
+pid_file: "/var/run/matrix-synapse.pid"
+
+# Listeners configuration
+listeners:
+  - port: 8008
+    tls: false
+    type: http
+    x_forwarded: true
+    bind_addresses:
+      - '127.0.0.1'
+    resources:
+      - names: [client, federation]
+        compress: false
+
+# Database configuration  
+database:
+  name: sqlite3
+  args:
+    database: /var/lib/matrix-synapse/homeserver.db
+
+# Logging configuration
+log_config: "/etc/matrix-synapse/log.yaml"
+
+# Media store
+media_store_path: /var/lib/matrix-synapse/media
+
+# Registration and user management
+registration_shared_secret: "{{ registration_shared_secret }}"
+enable_registration: false
+allow_guest_access: false
+
+# Security settings
+form_secret: "{{ form_secret }}"
+macaroon_secret_key: "{{ macaroon_secret_key }}"
+
+# Signing key
+signing_key_path: "/etc/matrix-synapse/homeserver.signing.key"
+
+# Trusted key servers
+trusted_key_servers:
+  - server_name: "matrix.org"
+
+# Basic rate limiting
+rc_message:
+  per_second: 0.2
+  burst_count: 10
+
+rc_login:
+  address:
+    per_second: 0.17
+    burst_count: 3
+  account:
+    per_second: 0.17
+    burst_count: 3
+
+# Security settings
+require_auth_for_profile_requests: true
+limit_profile_requests_to_users_who_share_rooms: true
+
+# Media settings
+enable_media_repo: true
+max_upload_size: 50M
+max_image_pixels: 32M
+
+# Disable metrics for security
+enable_metrics: false
+report_stats: false
+
+# Session settings
+session_lifetime: 24h
+
+# Admin contact
+admin_contact: 'mailto:admin@{{ matrix_server_name }}'

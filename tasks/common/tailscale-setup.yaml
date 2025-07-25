@@ -1,0 +1,54 @@
+# Tailscale VPN setup with consistent naming
+---
+- name: Install Tailscale
+  block:
+    - name: Download and install Tailscale
+      ansible.builtin.shell: |
+        curl -fsSL https://tailscale.com/install.sh | sh
+      args:
+        creates: /usr/bin/tailscale
+
+    - name: Connect to Tailscale with deployment name
+      ansible.builtin.shell: |
+        tailscale up --authkey={{ tailscale_auth_key }} \
+          --hostname={{ deployment_name }} \
+          --accept-routes --accept-dns=false
+      when: tailscale_auth_key is defined
+      register: tailscale_connect
+      ignore_errors: yes
+
+    - name: Get Tailscale IP address
+      ansible.builtin.shell: tailscale ip -4
+      register: tailscale_ip_result
+      when: tailscale_auth_key is defined
+      retries: 5
+      delay: 3
+      until: tailscale_ip_result.rc == 0
+
+    - name: Set Tailscale IP as fact
+      ansible.builtin.set_fact:
+        tailscale_ip: "{{ tailscale_ip_result.stdout.strip() }}"
+        tailscale_ip_address: "{{ tailscale_ip_result.stdout.strip() }}"
+      when: tailscale_auth_key is defined and tailscale_ip_result.rc == 0
+
+    - name: Display Tailscale configuration
+      debug:
+        msg: |
+          🔒 Tailscale VPN Configuration:
+          - Hostname: {{ deployment_name }}
+          - IP Address: {{ tailscale_ip_address | default('Manual setup required') }}
+          {% if tailscale_ip_address is defined %}
+          - Dashboard: https://{{ tailscale_ip_address }}:8443
+          - Chat Server: https://{{ tailscale_ip_address }}
+          {% endif %}
+
+  when: tailscale_auth_key is defined
+
+- name: Display manual Tailscale setup instructions
+  debug:
+    msg: |
+      ⚠️  Tailscale Setup Required:
+      1. Install: curl -fsSL https://tailscale.com/install.sh | sh
+      2. Connect: sudo tailscale up --hostname={{ deployment_name }}
+      3. Get IP: sudo tailscale ip -4
+  when: tailscale_auth_key is not defined

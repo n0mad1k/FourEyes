@@ -1,0 +1,59 @@
+# Intelligence Chat Server Deployment  
+# Matrix homeserver with OSINT bots and threat intelligence feeds
+
+---
+- name: Deploy Intelligence Chat Server
+  hosts: all
+  become: yes
+  gather_facts: yes
+  vars:
+    deployment_type: "intel-chat"
+    vpn_only_access: true
+    intel_features: true
+
+  tasks:
+    - name: Set deployment name for consistency
+      set_fact:
+        deployment_name: "{{ deployment_name | default('intel-' + ansible_date_time.epoch[-6:]) }}"
+
+    - name: Display deployment information
+      debug:
+        msg: |
+          🕵️  Intelligence Chat Server Deployment
+          =======================================
+          Deployment Name: {{ deployment_name }}
+          Server Type: OSINT & Threat Intelligence
+          Access Method: VPN-Only Secure Access
+          Features: Matrix + Element + OSINT Bots + Intel Feeds
+
+    # Include common chat server tasks
+    - include_tasks: ../tasks/common/system-setup.yaml
+    - include_tasks: ../tasks/common/tailscale-setup.yaml
+    - include_tasks: ../tasks/common/matrix-setup.yaml
+    - include_tasks: ../tasks/common/nginx-setup.yaml
+    - include_tasks: ../tasks/common/security-basic.yaml
+    
+    # Intel specific tasks
+    - include_tasks: ../tasks/intel/osint-bots.yaml
+    - include_tasks: ../tasks/intel/threat-feeds.yaml
+    - include_tasks: ../tasks/intel/intel-channels.yaml
+    
+    # Common completion tasks
+    - include_tasks: ../tasks/common/user-creation.yaml
+    - include_tasks: ../tasks/common/final-status.yaml
+
+  handlers:
+    - name: Reload Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+
+    - name: Restart Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
+
+    - name: Restart Matrix
+      ansible.builtin.service:
+        name: matrix-synapse
+        state: restarted

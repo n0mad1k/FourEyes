@@ -1,0 +1,347 @@
+#!/bin/bash
+# Enhanced security hardening script for FourEyes
+# Adapted from RedHot security framework
+
+echo "🛡️ Setting up enhanced security for FourEyes Matrix Server..."
+
+# System hardening
+echo "🔧 Applying system hardening..."
+
+# Kernel security parameters
+cat >> /etc/sysctl.conf << EOF
+
+# FourEyes Security Hardening
+# Network security
+net.ipv4.ip_forward=0
+net.ipv4.conf.all.send_redirects=0
+net.ipv4.conf.default.send_redirects=0
+net.ipv4.conf.all.accept_redirects=0
+net.ipv4.conf.default.accept_redirects=0
+net.ipv4.conf.all.secure_redirects=0
+net.ipv4.conf.default.secure_redirects=0
+net.ipv4.conf.all.accept_source_route=0
+net.ipv4.conf.default.accept_source_route=0
+net.ipv4.conf.all.log_martians=1
+net.ipv4.conf.default.log_martians=1
+net.ipv4.icmp_echo_ignore_broadcasts=1
+net.ipv4.icmp_ignore_bogus_error_responses=1
+net.ipv4.tcp_syncookies=1
+net.ipv4.tcp_max_syn_backlog=2048
+net.ipv4.tcp_synack_retries=2
+net.ipv4.tcp_syn_retries=5
+
+# IPv6 security (disable if not needed)
+net.ipv6.conf.all.disable_ipv6=1
+net.ipv6.conf.default.disable_ipv6=1
+
+# Kernel security
+kernel.dmesg_restrict=1
+kernel.kptr_restrict=2
+kernel.yama.ptrace_scope=1
+kernel.core_uses_pid=1
+fs.suid_dumpable=0
+
+# Memory protection
+vm.mmap_min_addr=65536
+kernel.randomize_va_space=2
+EOF
+
+# Apply kernel parameters
+sysctl -p
+
+# Setup log monitoring
+echo "📊 Setting up log monitoring..."
+cat > /usr/local/bin/foureyes_monitor.sh << 'EOF'
+#!/bin/bash
+# Enhanced log monitoring for FourEyes
+
+SECURITY_LOG="/var/log/foureyes-security.log"
+
+# Check for critical security events
+check_security_alerts() {
+    # Check for multiple failed auth attempts
+    FAILED_AUTH=$(grep "authentication failure" /var/log/auth.log | grep "$(date '+%b %d')" | wc -l)
+    if [ $FAILED_AUTH -gt 20 ]; then
+        echo "$(date): CRITICAL - $FAILED_AUTH failed authentication attempts today" >> $SECURITY_LOG
+    fi
+    
+    # Check for scanner activity
+    SCANNER_ACTIVITY=$(grep -i "scanner\|scan\|probe" /var/log/nginx/*.log | grep "$(date '+%d/%b/%Y')" | wc -l)
+    if [ $SCANNER_ACTIVITY -gt 10 ]; then
+        echo "$(date): WARNING - $SCANNER_ACTIVITY potential scanner activities detected" >> $SECURITY_LOG
+    fi
+    
+    # Check disk space
+    DISK_USAGE=$(df / | awk 'NR==2 {print $5}' | sed 's/%//')
+    if [ $DISK_USAGE -gt 90 ]; then
+        echo "$(date): CRITICAL - Disk usage at ${DISK_USAGE}%" >> $SECURITY_LOG
+    fi
+    
+    # Check memory usage
+    MEMORY_USAGE=$(free | awk 'FNR==2{printf "%.0f", $3/($3+$7)*100}')
+    if [ $MEMORY_USAGE -gt 90 ]; then
+        echo "$(date): WARNING - Memory usage at ${MEMORY_USAGE}%" >> $SECURITY_LOG
+    fi
+}
+
+# Check service health
+check_service_health() {
+    SERVICES=("matrix-synapse" "nginx" "fail2ban")
+    
+    for service in "${SERVICES[@]}"; do
+        if ! systemctl is-active --quiet $service; then
+            echo "$(date): CRITICAL - Service $service is not running" >> $SECURITY_LOG
+            systemctl restart $service
+        fi
+    done
+}
+
+# Main monitoring function
+main() {
+    check_security_alerts
+    check_service_health
+    
+    echo "$(date): Security monitoring cycle completed" >> $SECURITY_LOG
+}
+
+main
+EOF
+
+chmod +x /usr/local/bin/foureyes_monitor.sh
+
+# Setup monitoring cron job
+cat > /etc/cron.d/foureyes-monitoring << 'EOF'
+# FourEyes Security Monitoring
+*/10 * * * * root /usr/local/bin/foureyes_monitor.sh
+EOF
+
+# Create intrusion detection script
+cat > /usr/local/bin/foureyes_intrusion_detection.sh << 'EOF'
+#!/bin/bash
+# Advanced intrusion detection for FourEyes
+
+SECURITY_LOG="/var/log/foureyes-security.log"
+THRESHOLD_FAILED_LOGIN=10
+THRESHOLD_SCAN_ATTEMPTS=20
+
+# Detect brute force attacks
+detect_brute_force() {
+    ATTACKS=$(grep "Failed password" /var/log/auth.log | grep "$(date '+%b %d')" | \
+              awk '{print $11}' | sort | uniq -c | awk '$1 > '$THRESHOLD_FAILED_LOGIN' {print $2}')
+    
+    for ip in $ATTACKS; do
+        COUNT=$(grep "Failed password" /var/log/auth.log | grep "$(date '+%b %d')" | grep $ip | wc -l)
+        echo "$(date): INTRUSION - Brute force attack detected from $ip ($COUNT attempts)" >> $SECURITY_LOG
+        
+        # Auto-block with iptables
+        iptables -I INPUT -s $ip -j DROP
+    done
+}
+
+# Detect port scanning
+detect_port_scans() {
+    # Check nginx logs for scanning patterns
+    SCANNERS=$(grep -E "(nikto|nmap|masscan|dirb|gobuster)" /var/log/nginx/access.log | \
+               grep "$(date '+%d/%b/%Y')" | awk '{print $1}' | sort | uniq -c | \
+               awk '$1 > '$THRESHOLD_SCAN_ATTEMPTS' {print $2}')
+    
+    for ip in $SCANNERS; do
+        COUNT=$(grep $ip /var/log/nginx/access.log | grep "$(date '+%d/%b/%Y')" | wc -l)
+        echo "$(date): INTRUSION - Port scan detected from $ip ($COUNT requests)" >> $SECURITY_LOG
+        
+        # Block scanner
+        iptables -I INPUT -s $ip -j DROP
+    done
+}
+
+# Detect suspicious file access
+detect_file_access() {
+    SUSPICIOUS_PATHS=("/etc/passwd" "/etc/shadow" "/.env" "/wp-admin" "/phpmyadmin")
+    
+    for path in "${SUSPICIOUS_PATHS[@]}"; do
+        ATTEMPTS=$(grep "$path" /var/log/nginx/access.log | grep "$(date '+%d/%b/%Y')" | wc -l)
+        if [ $ATTEMPTS -gt 5 ]; then
+            IPS=$(grep "$path" /var/log/nginx/access.log | grep "$(date '+%d/%b/%Y')" | \
+                  awk '{print $1}' | sort | uniq)
+            for ip in $IPS; do
+                echo "$(date): INTRUSION - Suspicious file access from $ip to $path" >> $SECURITY_LOG
+            done
+        fi
+    done
+}
+
+# Main detection function
+main() {
+    detect_brute_force
+    detect_port_scans
+    detect_file_access
+    
+    echo "$(date): Intrusion detection scan completed" >> $SECURITY_LOG
+}
+
+main
+EOF
+
+chmod +x /usr/local/bin/foureyes_intrusion_detection.sh
+
+# Add intrusion detection to cron
+echo "*/5 * * * * root /usr/local/bin/foureyes_intrusion_detection.sh" >> /etc/cron.d/foureyes-monitoring
+
+# Setup automated backup
+cat > /usr/local/bin/backup_foureyes.sh << 'EOF'
+#!/bin/bash
+# Automated FourEyes backup script
+
+BACKUP_DIR="/root/foureyes-backups"
+DATE=$(date +%Y%m%d_%H%M%S)
+RETENTION_DAYS=30
+
+# Create backup directory
+mkdir -p $BACKUP_DIR
+
+# Backup Matrix database
+sudo -u matrix-synapse sqlite3 /var/lib/matrix-synapse/homeserver.db ".backup $BACKUP_DIR/matrix_db_$DATE.db"
+
+# Backup configuration files
+tar -czf $BACKUP_DIR/config_$DATE.tar.gz \
+    /etc/matrix-synapse/ \
+    /etc/nginx/sites-available/ \
+    /etc/fail2ban/ \
+    /etc/ssh/sshd_config \
+    2>/dev/null
+
+# Clean old backups
+find $BACKUP_DIR -name "*.gz" -mtime +$RETENTION_DAYS -delete
+find $BACKUP_DIR -name "*.db" -mtime +$RETENTION_DAYS -delete
+
+echo "$(date): Backup completed successfully" >> /var/log/foureyes-security.log
+EOF
+
+chmod +x /usr/local/bin/backup_foureyes.sh
+
+# Add backup to cron (daily at 2 AM)
+echo "0 2 * * * root /usr/local/bin/backup_foureyes.sh" >> /etc/cron.d/foureyes-monitoring
+
+# Create security report generator
+cat > /usr/local/bin/foureyes_security_report.sh << 'EOF'
+#!/bin/bash
+# Generate daily security report for FourEyes
+
+REPORT_FILE="/tmp/foureyes_security_report_$(date +%Y%m%d).txt"
+
+{
+    echo "=========================================="
+    echo "FourEyes Security Report - $(date)"
+    echo "=========================================="
+    echo
+    
+    echo "SYSTEM STATUS:"
+    echo "- Uptime: $(uptime | awk '{print $3,$4}' | sed 's/,//')"
+    echo "- Load Average: $(uptime | awk -F'load average:' '{print $2}')"
+    echo "- Memory Usage: $(free | awk 'FNR==2{printf "%.0f%%", $3/($3+$7)*100}')"
+    echo "- Disk Usage: $(df / | awk 'NR==2 {print $5}')"
+    echo
+    
+    echo "SECURITY EVENTS (Last 24 Hours):"
+    echo "- Failed SSH attempts: $(grep 'Failed password' /var/log/auth.log | grep "$(date '+%b %d')" | wc -l)"
+    echo "- Nginx 403 errors: $(grep ' 403 ' /var/log/nginx/access.log | grep "$(date '+%d/%b/%Y')" | wc -l)"
+    echo "- Fail2ban bans: $(fail2ban-client status | grep -o '[0-9]* jail(s)' | awk '{print $1}')"
+    echo
+    
+    echo "SERVICE STATUS:"
+    for service in matrix-synapse nginx fail2ban; do
+        if systemctl is-active --quiet $service; then
+            echo "- $service: RUNNING"
+        else
+            echo "- $service: STOPPED"
+        fi
+    done
+    echo
+    
+    echo "MATRIX SERVER STATUS:"
+    echo "- Matrix database size: $(du -h /var/lib/matrix-synapse/homeserver.db 2>/dev/null | awk '{print $1}' || echo 'N/A')"
+    echo "- Active connections: $(netstat -an | grep ':8008\|:443' | grep ESTABLISHED | wc -l)"
+    
+} > $REPORT_FILE
+
+# Send report to logs
+cat $REPORT_FILE >> /var/log/foureyes-security.log
+
+echo "Security report generated: $REPORT_FILE"
+EOF
+
+chmod +x /usr/local/bin/foureyes_security_report.sh
+
+# Add daily security report
+echo "0 6 * * * root /usr/local/bin/foureyes_security_report.sh" >> /etc/cron.d/foureyes-monitoring
+
+# Setup log rotation
+cat > /etc/logrotate.d/foureyes-security << 'EOF'
+/var/log/foureyes-*.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0640 root adm
+    postrotate
+        systemctl reload rsyslog > /dev/null 2>&1 || true
+    endscript
+}
+
+/var/log/nginx/foureyes_*.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0640 www-data adm
+    postrotate
+        systemctl reload nginx > /dev/null 2>&1 || true
+    endscript
+}
+EOF
+
+# Disable unused services
+systemctl disable avahi-daemon 2>/dev/null || true
+systemctl disable bluetooth 2>/dev/null || true
+systemctl disable cups 2>/dev/null || true
+
+# Secure shared memory
+echo "tmpfs /run/shm tmpfs defaults,noexec,nosuid 0 0" >> /etc/fstab
+
+# Create security banner
+cat > /etc/motd << 'EOF'
+================================================================================
+👁️ FourEyes Intelligence Matrix Server - ENHANCED SECURITY ENABLED 👁️
+================================================================================
+
+⚠️  AUTHORIZED ACCESS ONLY ⚠️
+
+This system is protected by:
+✓ SSH key-only authentication
+✓ Advanced intrusion detection
+✓ Real-time security monitoring
+✓ Automated threat response
+✓ Enhanced SSL/TLS configuration
+✓ Comprehensive logging
+
+All activities are logged and monitored.
+Unauthorized access is prohibited and will be prosecuted.
+
+For support: Check /var/log/foureyes-security.log
+Matrix Server: https://[SERVER-IP]
+
+================================================================================
+EOF
+
+echo "✅ FourEyes enhanced security setup completed!"
+echo "🔐 All security features are now active and monitoring"
+echo "📊 Monitor logs in /var/log/foureyes-security.log"
+echo "🚨 Intrusion detection running every 5 minutes"
+echo "💾 Automated backups scheduled daily at 2 AM"
+echo "📈 Daily security reports generated at 6 AM"

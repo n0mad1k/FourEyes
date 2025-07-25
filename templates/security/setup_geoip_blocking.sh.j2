@@ -1,0 +1,93 @@
+#!/bin/bash
+# Geographic IP blocking setup for FourEyes
+
+echo "🌍 Setting up geographic IP blocking..."
+
+# Install geoip tools
+apt-get update
+apt-get install -y geoip-bin geoip-database
+
+# Download and install GeoIP databases
+mkdir -p /usr/share/GeoIP
+cd /usr/share/GeoIP
+
+# Download GeoLite2 databases (free version)
+wget -O GeoLite2-Country.mmdb.gz "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb.gz"
+gunzip GeoLite2-Country.mmdb.gz
+
+# Create GeoIP blocking script
+cat > /usr/local/bin/geoip_blocker.sh << 'EOF'
+#!/bin/bash
+# Block non-US IP addresses for enhanced security
+
+GEOIP_LOG="/var/log/foureyes-geoip.log"
+BLOCKED_COUNTRIES="CN RU KP IR"  # Add countries to block
+
+# Function to check and block IPs
+block_non_us_ips() {
+    # Get recent IPs from nginx logs
+    tail -n 1000 /var/log/nginx/foureyes_access.log | \
+    awk '{print $1}' | sort | uniq | while read ip; do
+        # Skip local/private IPs
+        if [[ $ip =~ ^(127\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|100\.64\.) ]]; then
+            continue
+        fi
+        
+        # Get country code
+        COUNTRY=$(geoiplookup $ip | awk -F': ' '{print $2}' | awk -F',' '{print $1}' | head -1)
+        
+        # Block if not US
+        if [[ "$COUNTRY" != "US" ]] && [[ "$COUNTRY" != "United States" ]]; then
+            # Check if already blocked
+            if ! iptables -L INPUT | grep -q $ip; then
+                iptables -I INPUT -s $ip -j DROP
+                echo "$(date): BLOCKED non-US IP $ip from country: $COUNTRY" >> $GEOIP_LOG
+            fi
+        fi
+        
+        # Block specific countries
+        for blocked_country in $BLOCKED_COUNTRIES; do
+            if [[ "$COUNTRY" == "$blocked_country" ]]; then
+                if ! iptables -L INPUT | grep -q $ip; then
+                    iptables -I INPUT -s $ip -j DROP
+                    echo "$(date): BLOCKED $blocked_country IP $ip" >> $GEOIP_LOG
+                fi
+            fi
+        done
+    done
+}
+
+# Run the blocking function
+block_non_us_ips
+
+echo "$(date): GeoIP blocking scan completed" >> $GEOIP_LOG
+EOF
+
+chmod +x /usr/local/bin/geoip_blocker.sh
+
+# Add to cron for regular execution
+echo "*/15 * * * * root /usr/local/bin/geoip_blocker.sh" >> /etc/cron.d/foureyes-monitoring
+
+# Create fail2ban filter for GeoIP
+cat > /etc/fail2ban/filter.d/geoip-blocker.conf << 'EOF'
+[Definition]
+failregex = ^.*BLOCKED.* IP <HOST> .*$
+ignoreregex =
+EOF
+
+# Add GeoIP jail to fail2ban
+cat >> /etc/fail2ban/jail.local << 'EOF'
+
+[geoip-blocker]
+enabled = true
+filter = geoip-blocker
+logpath = /var/log/foureyes-geoip.log
+maxretry = 1
+bantime = 86400
+findtime = 3600
+EOF
+
+echo "✅ Geographic IP blocking setup completed!"
+echo "📍 Non-US IPs will be automatically blocked"
+echo "🚫 Blocked countries: CN, RU, KP, IR"
+echo "📊 Check logs: /var/log/foureyes-geoip.log"

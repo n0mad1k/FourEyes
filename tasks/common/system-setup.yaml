@@ -1,0 +1,52 @@
+# System setup and basic hardening
+---
+- name: Update system packages
+  ansible.builtin.apt:
+    update_cache: yes
+    upgrade: dist
+    autoremove: yes
+
+- name: Install essential packages
+  ansible.builtin.apt:
+    name:
+      - nginx
+      - python3-pip
+      - python3-venv
+      - git
+      - curl
+      - wget
+      - htop
+      - vim
+      - fail2ban
+      - ufw
+      - openssl
+      - ca-certificates
+      - gnupg
+      - lsb-release
+      - software-properties-common
+    state: present
+
+- name: Configure basic SSH hardening
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    backup: yes
+  loop:
+    - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin yes' }
+    - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
+    - { regexp: '^#?PubkeyAuthentication', line: 'PubkeyAuthentication yes' }
+    - { regexp: '^#?X11Forwarding', line: 'X11Forwarding no' }
+  notify: 
+    - Restart SSH
+
+- name: Create matrix-ssl group for certificate access
+  ansible.builtin.group:
+    name: matrix-ssl
+    state: present
+
+- name: Add nginx user to matrix-ssl group
+  ansible.builtin.user:
+    name: www-data
+    groups: matrix-ssl
+    append: yes

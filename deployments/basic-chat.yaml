@@ -1,18 +1,18 @@
 ---
-- name: Create and configure Linode instance Intel Server
+- name: Create and configure Linode instance Basic Chat Server
   hosts: localhost
   gather_facts: false
   connection: local
   vars_files:
-    - vars.yaml
+    - ../vars.yaml
   vars:
-    ansible_python_interpreter: "{{ playbook_dir }}/venv/bin/python3"
+    ansible_python_interpreter: "{{ playbook_dir }}/../venv/bin/python3"
     ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
   tasks:
     - name: Create a Linode instance
       community.general.linode_v4:
         access_token: "{{ linode_token }}"
-        label: "{{ deployment_name | default('4eyes-server') }}"
+        label: "{{ deployment_name }}"
         type: "{{ plan }}"
         region: "{{ region }}"
         image: "{{ image }}"
@@ -43,8 +43,7 @@
   vars:
     ansible_python_interpreter: /usr/bin/python3
     ansible_ssh_common_args: '-o StrictHostKeyChecking=no'
-    matrix_base_url: "http://{{ ansible_host }}"
-    matrix_server_name: "{{ ansible_host }}"
+    # Matrix configuration will be set after Tailscale setup
   tasks:
     - name: Disable password authentication for SSH
       ansible.builtin.lineinfile:
@@ -57,6 +56,37 @@
       ansible.builtin.service:
         name: ssh
         state: restarted
+
+    - name: Check system resources and recommend appropriate sizing
+      ansible.builtin.shell: |
+        TOTAL_RAM=$(free -m | awk 'NR==2{printf "%.0f", $2}')
+        TOTAL_CPU=$(nproc)
+        echo "=== SYSTEM RESOURCES ==="
+        echo "Total RAM: ${TOTAL_RAM}MB"
+        echo "CPU Cores: ${TOTAL_CPU}"
+        echo ""
+        if [ "$TOTAL_RAM" -lt 4000 ]; then
+          echo "⚠️  WARNING: RAM below 4GB detected!"
+          echo "   Matrix-Synapse + Element + Nginx requires at least 4GB RAM"
+          echo "   Consider upgrading to g6-standard-2 (4GB) or higher"
+          echo "   Current deployment may experience performance issues"
+          echo ""
+        fi
+        if [ "$TOTAL_CPU" -lt 2 ]; then
+          echo "⚠️  WARNING: Less than 2 CPU cores detected!"
+          echo "   Consider upgrading to a multi-core instance"
+          echo ""
+        fi
+        echo "✅ Recommended Linode types for Matrix chat servers:"
+        echo "   • g6-standard-2 (4GB RAM, 2 CPU) - Minimum recommended"
+        echo "   • g6-standard-4 (8GB RAM, 4 CPU) - Good performance"
+        echo "   • g6-standard-6 (16GB RAM, 6 CPU) - High performance"
+        echo "========================="
+      register: resource_check
+
+    - name: Display system resource information
+      ansible.builtin.debug:
+        var: resource_check.stdout_lines
 
     - name: Update apt package list
       ansible.builtin.apt:
@@ -80,9 +110,22 @@
             state: present
             update_cache: yes
 
-        - name: Connect to Tailscale network
+        - name: Check if Tailscale is already connected
+          ansible.builtin.shell: tailscale status --json | jq -r '.Self.HostName'
+          register: current_hostname
+          ignore_errors: yes
+
+        - name: Force disconnect if hostname is different
+          ansible.builtin.shell: tailscale logout
+          when: 
+            - tailscale_auth_key is defined
+            - current_hostname.rc == 0
+            - current_hostname.stdout.strip() != deployment_name
+          ignore_errors: yes
+
+        - name: Connect to Tailscale network with correct hostname
           ansible.builtin.shell: |
-            tailscale up --authkey={{ tailscale_auth_key }} --accept-routes --accept-dns=false --hostname={{ deployment_name | default('foureyes-intel') }}
+            tailscale up --authkey={{ tailscale_auth_key }} --accept-routes --accept-dns=false --hostname={{ deployment_name }}
           when: tailscale_auth_key is defined
           register: tailscale_connect
           ignore_errors: yes
@@ -99,20 +142,41 @@
             tailscale_ip_address: "{{ tailscale_ip_result.stdout.strip() }}"
           when: tailscale_auth_key is defined and tailscale_ip_result.rc == 0
 
+        - name: Install jq for JSON parsing
+          ansible.builtin.apt:
+            name: jq
+            state: present
+            update_cache: yes
+
+        - name: Verify Tailscale hostname was set correctly
+          ansible.builtin.shell: tailscale status --json | jq -r '.Self.HostName'
+          register: verify_hostname
+          when: tailscale_auth_key is defined
+          ignore_errors: yes
+
+        - name: Display Tailscale verification
+          ansible.builtin.debug:
+            msg: |
+              🔍 Tailscale Configuration Verification:
+              - Requested hostname: {{ deployment_name }}
+              - Actual hostname: {{ verify_hostname.stdout | default('Not available') }}
+              - Tailscale IP: {{ tailscale_ip_address | default('Not available') }}
+          when: tailscale_auth_key is defined
+
     - name: Set Matrix server name to use Tailscale IP consistently
-      set_fact:
+      ansible.builtin.set_fact:
         matrix_server_name: "{{ tailscale_ip_address }}"
         base_url: "{{ tailscale_ip_address }}"
       when: tailscale_ip_address is defined
 
     - name: Set Matrix server name fallback if no Tailscale
-      set_fact:
+      ansible.builtin.set_fact:
         matrix_server_name: "{{ ansible_host }}"
         base_url: "{{ ansible_host }}"
       when: tailscale_ip_address is not defined
 
     - name: Display Matrix configuration info
-      debug:
+      ansible.builtin.debug:
         msg: |
           🔗 Matrix Configuration:
           - Server Name: {{ matrix_server_name }}
@@ -120,7 +184,8 @@
           - Tailscale Integration: {{ 'Enabled - Using VPN IP' if tailscale_ip_address is defined else 'Manual setup required' }}
           {% if tailscale_ip_address is defined %}
           - Matrix will be accessible at: https://{{ matrix_server_name }}
-          {% endif %}      when: tailscale_auth_key is defined
+          {% endif %}
+      when: tailscale_auth_key is defined
 
     - name: Install nginx
       ansible.builtin.apt:
@@ -188,17 +253,17 @@
         remote_src: yes
         creates: /var/www/element/element-{{ element_version.stdout }}/index.html
 
-    - name: Deploy VPN-only dashboard configuration
+    - name: Deploy VPN-only management dashboard (port 8443)
       ansible.builtin.template:
-        src: nginx/foureyes-vpn.conf.j2
+        src: ../templates/nginx/foureyes-vpn.conf.j2
         dest: /etc/nginx/sites-available/foureyes-vpn
         mode: '0644'
       notify:
         - Reload Nginx
 
-    - name: Deploy Element/Matrix nginx configuration
+    - name: Deploy Element Matrix web client (port 443)
       ansible.builtin.template:
-        src: nginx/element.conf.j2
+        src: ../templates/nginx/element.conf.j2
         dest: /etc/nginx/sites-available/element
         mode: '0644'
       notify:
@@ -250,7 +315,7 @@
     - name: Copy certificate for client download
       ansible.builtin.copy:
         src: /etc/ssl/certs/nginx-selfsigned.crt
-        dest: "/var/www/ca-download/{{ deployment_name | default('foureyes') }}-ca.pem"
+        dest: "/var/www/ca-download/{{ deployment_name }}-ca.pem"
         mode: '0644'
         remote_src: yes
 
@@ -301,7 +366,7 @@
     - name: Copy certificate as CA for client download
       ansible.builtin.copy:
         src: /etc/ssl/certs/nginx-selfsigned.crt
-        dest: "/var/www/ca-download/{{ deployment_name | default('foureyes') }}-ca.pem"
+        dest: "/var/www/ca-download/{{ deployment_name }}-ca.pem"
         remote_src: yes
         owner: www-data
         group: www-data
@@ -309,12 +374,32 @@
 
     - name: Configure Nginx for SSL
       ansible.builtin.template:
-        src: nginx/element.conf.j2
+        src: ../templates/nginx/element.conf.j2
         dest: /etc/nginx/sites-available/element
       notify:
         - Reload Nginx
 
-    - name: Configure Element config.json
+    - name: Test Nginx configuration before proceeding
+      ansible.builtin.shell: nginx -t
+      register: nginx_test
+      failed_when: nginx_test.rc != 0
+
+    - name: Display Nginx configuration test result
+      ansible.builtin.debug:
+        msg: "Nginx configuration test: {{ nginx_test.stderr_lines }}"
+
+    - name: Ensure Element files are properly served
+      ansible.builtin.shell: |
+        ls -la /var/www/element/element-{{ element_version.stdout }}/
+        echo "Element version directory contents:"
+        ls -la /var/www/element/element-{{ element_version.stdout }}/ | head -10
+      register: element_files_check
+
+    - name: Display Element files verification
+      ansible.builtin.debug:
+        var: element_files_check.stdout_lines
+
+    - name: Configure Element config.json with enhanced settings
       ansible.builtin.copy:
         dest: /var/www/element/element-{{ element_version.stdout }}/config.json
         content: |
@@ -337,12 +422,20 @@
                   ]
               },
               "features": {
-                  "feature_discord": true
+                  "feature_discord": true,
+                  "feature_thread": true,
+                  "feature_latex_maths": true
               },
               "setting_defaults": {
-                  "breadcrumbs": true
+                  "breadcrumbs": true,
+                  "MessageComposerInput.showStickersButton": false
               },
-              "welcomeUserId": "@admin:{{ matrix_server_name }}"
+              "welcomeUserId": "@admin:{{ matrix_server_name }}",
+              "bug_report_endpoint_url": null,
+              "privacy_policy_url": null,
+              "terms_and_conditions_url": null,
+              "disable_3pid_login": true,
+              "disable_custom_urls": true
           }
     
     - name: Ensure Matrix-Synapse is stopped before configuration
@@ -649,7 +742,7 @@
 
     - name: Force regenerate Matrix homeserver configuration with correct server name
       ansible.builtin.template:
-        src: templates/matrix/homeserver_secure.yaml.j2
+        src: ../templates/matrix/homeserver_secure.yaml.j2
         dest: /etc/matrix-synapse/homeserver.yaml
         owner: matrix-synapse
         group: matrix-synapse
@@ -876,7 +969,7 @@
 
     - name: Configure Fail2Ban for SSH
       ansible.builtin.template:
-        src: fail2ban/jail.local.j2
+        src: ../templates/fail2ban/jail.local.j2
         dest: /etc/fail2ban/jail.local
       notify:
         - Restart Fail2Ban
@@ -888,7 +981,7 @@
 
     - name: Configure unattended-upgrades
       ansible.builtin.template:
-        src: unattended-upgrades/50unattended-upgrades.j2
+        src: ../templates/unattended-upgrades/50unattended-upgrades.j2
         dest: /etc/apt/apt.conf.d/50unattended-upgrades
       notify:
         - Restart Unattended Upgrades
@@ -904,7 +997,7 @@
 
     - name: Deploy enhanced security hardening script
       ansible.builtin.template:
-        src: security/enhanced_security.sh.j2
+        src: ../templates/security/enhanced_security.sh.j2
         dest: /tmp/enhanced_security.sh
         mode: '0755'
 
@@ -928,8 +1021,8 @@
         dest: "/etc/fail2ban/filter.d/{{ item | basename | regex_replace('\\.j2$', '') }}"
         mode: '0644'
       loop:
-        - fail2ban/filter.d/matrix-login.conf.j2
-        - fail2ban/filter.d/nginx-aggressive.conf.j2
+        - ../templates/fail2ban/filter.d/matrix-login.conf.j2
+        - ../templates/fail2ban/filter.d/nginx-aggressive.conf.j2
       notify: Restart Fail2Ban
 
     - name: Setup firewall rules with UFW (SSH only for VPN mode)
@@ -960,7 +1053,7 @@
 
     - name: Setup Matrix homeserver configuration with enhanced security
       ansible.builtin.template:
-        src: matrix/homeserver_secure.yaml.j2
+        src: ../templates/matrix/homeserver_secure.yaml.j2
         dest: /etc/matrix-synapse/homeserver.yaml
         owner: matrix-synapse
         group: matrix-synapse
@@ -976,20 +1069,20 @@
 
     - name: Deploy secure Matrix logging configuration
       ansible.builtin.template:
-        src: matrix/log.yaml.j2
+        src: ../templates/matrix/log.yaml.j2
         dest: /etc/matrix-synapse/log.yaml
         owner: matrix-synapse
         group: matrix-synapse
         mode: '0640'
     - name: Deploy VPN security setup script
       ansible.builtin.template:
-        src: security/setup_vpn_security.sh.j2
+        src: ../templates/security/setup_vpn_security.sh.j2
         dest: /tmp/setup_vpn_security.sh
         mode: '0755'
 
     - name: Deploy GeoIP blocking setup script
       ansible.builtin.template:
-        src: security/setup_geoip_blocking.sh.j2
+        src: ../templates/security/setup_geoip_blocking.sh.j2
         dest: /tmp/setup_geoip_blocking.sh
         mode: '0755'
 
@@ -1036,91 +1129,47 @@
       ansible.builtin.copy:
         content: |
           #!/bin/bash
-          {% if vpn_only_access | default(false) %}
-          echo "=========================================="
-          echo "🔒 FourEyes VPN-ONLY Intelligence Server 🔒"
-          echo "=========================================="
-          echo ""
-          echo "⚠️  SECURITY NOTICE: VPN-ONLY ACCESS ENABLED ⚠️"
-          echo "This server is configured for maximum security."
-          echo "Access is ONLY available via Tailscale VPN."
-          echo ""
-          echo "📍 Server IP: {{ ansible_host }}"
-          echo "🚫 Public Access: DISABLED (VPN-only mode)"
-          {% if tailscale_ip is defined %}
-          echo "🔒 VPN Access: https://{{ tailscale_ip }}"
-          echo "📊 Tailscale IP: {{ tailscale_ip }}"
-          {% else %}
-          echo "🔒 VPN Access: https://[TAILSCALE-IP] (run 'tailscale ip -4' to get IP)"
-          {% endif %}
-          echo ""
-          echo "🏷️  Deployment: {{ deployment_name | default('foureyes-intel') }}"
-          echo ""
-          {% if tailscale_ip is not defined %}
-          echo "🔗 REQUIRED: Connect via Tailscale VPN:"
-          echo "1. Get auth key from: https://login.tailscale.com/admin/settings/keys"
-          echo "2. On this server, run:"
-          echo "   sudo tailscale up --authkey=YOUR-AUTH-KEY --accept-routes --accept-dns=false --hostname={{ deployment_name | default('foureyes-intel') }}"
-          echo "3. Get server Tailscale IP: sudo tailscale ip -4"
-          echo "4. Access ONLY via: https://[TAILSCALE-IP]"
-          {% else %}
-          echo "✅ Tailscale already configured!"
-          echo "🔗 Access URL: https://{{ tailscale_ip }}"
-          {% endif %}
-          echo ""
-          echo "📥 Download CA certificate (VPN required):"
-          {% if tailscale_ip is defined %}
-          echo "wget https://{{ tailscale_ip }}/ca/{{ deployment_name | default('foureyes') }}-ca.pem --no-check-certificate"
-          {% else %}
-          echo "wget https://[TAILSCALE-IP]/ca/{{ deployment_name | default('foureyes') }}-ca.pem --no-check-certificate"
-          {% endif %}
-          echo ""
-          echo "🛡️ MAXIMUM SECURITY FEATURES ACTIVE:"
-          echo "✓ VPN-ONLY access (no public internet access)"
-          echo "✓ Tailscale IP restrictions at nginx level"
-          echo "✓ Firewall blocks all non-SSH traffic"
-          echo "✓ Advanced SSL/TLS configuration"
-          echo "✓ Real-time security monitoring"
-          echo "✓ Automated threat response"
-          echo ""
-          echo "⚠️  WARNING: Without VPN access, this server is unreachable!"
-          {% else %}
           echo "🛡️ FourEyes Intelligence Server Ready! 🛡️"
           echo "=========================================="
           echo ""
-          echo "📍 Tailscale IP: {{ tailscale_ip_address | default('[Run: tailscale ip -4]') }}"
-          echo "🌐 VPN Access: https://{{ matrix_server_name }}"
-          echo "🖥️  Dashboard: https://{{ matrix_server_name }}:8443"
-          {% if tailscale_ip_address is defined %}
-          echo "🔒 Matrix Chat: https://{{ matrix_server_name }}"
-          {% else %}
-          echo "🔒 Matrix Chat: https://{{ matrix_server_name }} (after VPN setup)"
-          {% endif %}
-          echo ""
-          echo "🏷️  Deployment: {{ deployment_name | default('foureyes-intel') }}"
-          echo ""
-          {% if tailscale_ip_address is not defined %}
-          echo "🔗 To connect via Tailscale VPN:"
-          echo "1. Get auth key from: https://login.tailscale.com/admin/settings/keys"
-          echo "2. On the server, run: sudo tailscale up --authkey=YOUR-AUTH-KEY --accept-routes --accept-dns=false --hostname={{ deployment_name | default('foureyes-intel') }}"
-          echo "3. Or add 'tailscale_auth_key' to your vars.yaml for automatic setup"
-          echo "4. Get server Tailscale IP: sudo tailscale ip -4"
-          echo "5. Access: https://[TAILSCALE-IP]:8443"
-          {% else %}
-          echo "✅ Tailscale configured! Access: https://{{ tailscale_ip_address }}:8443"
-          {% endif %}
-          echo ""
-          echo "📥 Download CA certificate:"
-          {% if tailscale_ip_address is defined %}
-          echo "wget https://{{ matrix_server_name }}:8443/ca/{{ deployment_name | default('foureyes') }}-ca.pem --no-check-certificate"
-          {% else %}
-          echo "wget https://{{ matrix_server_name }}:8443/ca/{{ deployment_name | default('foureyes') }}-ca.pem --no-check-certificate"
-          {% endif %}
-          echo ""
-          echo "🔐 Login Credentials:"
-          echo "Username: {{ matrix_admin_user | default('admin') }}"
-          echo "Password: {{ matrix_admin_password | default('admin123') }}"
-          echo "Server: {{ matrix_server_name }}"
+          
+          # Get current Tailscale IP dynamically
+          TAILSCALE_IP=$(tailscale ip -4 2>/dev/null | head -1)
+          if [ -n "$TAILSCALE_IP" ]; then
+              echo "📍 Tailscale IP: $TAILSCALE_IP"
+              echo "🌐 VPN Access: https://$TAILSCALE_IP"
+              echo "🖥️  Dashboard: https://$TAILSCALE_IP:8443"
+              echo "🔒 Matrix Chat: https://$TAILSCALE_IP"
+              echo ""
+              echo "🏷️  Deployment: {{ deployment_name }}"
+              echo ""
+              echo "✅ Tailscale configured! Access: https://$TAILSCALE_IP:8443"
+              echo ""
+              echo "📥 Download CA certificate:"
+              echo "wget https://$TAILSCALE_IP:8443/ca/{{ deployment_name }}-ca.pem --no-check-certificate"
+              echo ""
+              echo "🔐 Login Credentials:"
+              echo "Username: {{ matrix_admin_user | default('admin') }}"
+              echo "Password: {{ matrix_admin_password | default('admin123') }}"
+              echo "Server: $TAILSCALE_IP"
+          else
+              echo "📍 Tailscale IP: Not connected"
+              echo "🌐 VPN Access: Tailscale required"
+              echo "�️  Dashboard: Connect to Tailscale first"
+              echo ""
+              echo "🏷️  Deployment: {{ deployment_name }}"
+              echo ""
+              echo "🔗 To connect via Tailscale VPN:"
+              echo "1. Get auth key from: https://login.tailscale.com/admin/settings/keys"
+              echo "2. On the server, run: sudo tailscale up --authkey=YOUR-AUTH-KEY --accept-routes --accept-dns=false --hostname={{ deployment_name }}"
+              echo "3. Get server Tailscale IP: sudo tailscale ip -4"
+              echo "4. Access: https://[TAILSCALE-IP]:8443"
+              echo ""
+              echo "🔐 Login Credentials:"
+              echo "Username: {{ matrix_admin_user | default('admin') }}"
+              echo "Password: {{ matrix_admin_password | default('admin123') }}"
+              echo "Server: [Use Tailscale IP]"
+          fi
           echo ""
           echo "🛡️ Security Features Active:"
           echo "✓ VPN-only access (Tailscale required)"
@@ -1134,18 +1183,172 @@
           echo "- Matrix: /var/log/nginx/foureyes_access.log"
           echo "- Dashboard: /var/log/nginx/foureyes_dashboard.log"
           echo ""
+          echo "🔧 Troubleshooting Helper Scripts:"
+          echo "- matrix_diagnostics.sh     - Full system diagnostic"
+          echo "- restart_matrix.sh         - Safe service restart"
+          echo "- fix_matrix_config.sh      - Fix common config issues"
+          echo "- monitor_matrix.sh         - Real-time monitoring"
+          echo "- view_matrix_logs.sh       - Interactive log viewer"
+          echo "📍 Scripts location: /root/matrix-helpers/"
+          echo ""
           echo "⚠️  REMEMBER: All access requires Tailscale VPN connection!"
           echo "=========================================="
         dest: /usr/local/bin/foureyes-status.sh
         mode: '0755'
 
+    - name: Create helper scripts directory
+      ansible.builtin.file:
+        path: /root/matrix-helpers
+        state: directory
+        mode: '0755'
+
+    - name: Deploy Matrix diagnostic script
+      ansible.builtin.copy:
+        src: ../templates/scripts/matrix_diagnostics.sh
+        dest: /root/matrix-helpers/matrix_diagnostics.sh
+        mode: '0755'
+
+    - name: Deploy Matrix restart script
+      ansible.builtin.copy:
+        src: ../templates/scripts/restart_matrix.sh
+        dest: /root/matrix-helpers/restart_matrix.sh
+        mode: '0755'
+
+    - name: Deploy Matrix config fixer script
+      ansible.builtin.copy:
+        src: ../templates/scripts/fix_matrix_config.sh
+        dest: /root/matrix-helpers/fix_matrix_config.sh
+        mode: '0755'
+
+    - name: Deploy Matrix monitor script
+      ansible.builtin.copy:
+        src: ../templates/scripts/monitor_matrix.sh
+        dest: /root/matrix-helpers/monitor_matrix.sh
+        mode: '0755'
+
+    - name: Deploy Matrix logs viewer script
+      ansible.builtin.copy:
+        src: ../templates/scripts/view_matrix_logs.sh
+        dest: /root/matrix-helpers/view_matrix_logs.sh
+        mode: '0755'
+
+    - name: Deploy helper scripts README
+      ansible.builtin.copy:
+        src: ../templates/scripts/README.md
+        dest: /root/matrix-helpers/README.md
+        mode: '0644'
+
+    - name: Create symlinks for easy access
+      ansible.builtin.file:
+        src: "/root/matrix-helpers/{{ item }}"
+        dest: "/usr/local/bin/{{ item }}"
+        state: link
+      loop:
+        - matrix_diagnostics.sh
+        - restart_matrix.sh
+        - fix_matrix_config.sh
+        - monitor_matrix.sh
+        - view_matrix_logs.sh
+
     - name: Display final setup information
       ansible.builtin.shell: /usr/local/bin/foureyes-status.sh
       register: final_status
 
-    - name: Show setup completion
+    - name: Validate web services are responding
+      ansible.builtin.shell: |
+        echo "=== WEB SERVICES VALIDATION ==="
+        
+        # Test Matrix API endpoint
+        if curl -k -s -o /dev/null -w "%{http_code}" "https://127.0.0.1:443/_matrix/client/versions" | grep -q "200\|404"; then
+          echo "✅ Matrix API endpoint responding"
+        else
+          echo "❌ Matrix API endpoint not responding"
+        fi
+        
+        # Test Element web UI
+        if curl -k -s -o /dev/null -w "%{http_code}" "https://127.0.0.1:443/" | grep -q "200"; then
+          echo "✅ Element web UI responding"
+        else
+          echo "❌ Element web UI not responding"
+        fi
+        
+        # Test Dashboard
+        if curl -k -s -o /dev/null -w "%{http_code}" "https://127.0.0.1:8443/" | grep -q "200"; then
+          echo "✅ Management dashboard responding"
+        else
+          echo "❌ Management dashboard not responding"
+        fi
+        
+        # Check Nginx status
+        if systemctl is-active --quiet nginx; then
+          echo "✅ Nginx service active"
+        else
+          echo "❌ Nginx service not active"
+        fi
+        
+        # Check Matrix status  
+        if systemctl is-active --quiet matrix-synapse; then
+          echo "✅ Matrix-Synapse service active"
+        else
+          echo "❌ Matrix-Synapse service not active"
+        fi
+        
+        echo "==============================="
+      register: services_validation
+
+    - name: Display services validation results
+      ansible.builtin.debug:
+        var: services_validation.stdout_lines
+
+    - name: Show final status output
       ansible.builtin.debug:
         var: final_status.stdout_lines
+
+    - name: Show setup completion with prominent display
+      ansible.builtin.debug:
+        msg: |
+          
+          ████████████████████████████████████████████████████████████████████████
+          █                                                                      █
+          █               🎉 DEPLOYMENT COMPLETED SUCCESSFULLY! 🎉               █
+          █                                                                      █
+          ████████████████████████████████████████████████████████████████████████
+          
+          🏷️  Deployment Name: {{ deployment_name }}
+          🖥️  Server Type: Basic Chat Server  
+          � Tailscale IP: {{ tailscale_ip_address | default('Run: tailscale ip -4') }}
+          �🔒 VPN Access: Tailscale Required
+          🛡️  Security: Maximum (VPN-Only)
+          
+          📋 IMPORTANT - Use These URLs:
+          {% if tailscale_ip_address is defined %}
+          • Matrix Chat: https://{{ tailscale_ip_address }}
+          • Dashboard: https://{{ tailscale_ip_address }}:8443  
+          • CA Download: https://{{ tailscale_ip_address }}:8443/ca/
+          {% else %}
+          • Matrix Chat: https://[TAILSCALE-IP] (run 'tailscale ip -4')
+          • Dashboard: https://[TAILSCALE-IP]:8443
+          • CA Download: https://[TAILSCALE-IP]:8443/ca/
+          {% endif %}
+          
+          🔐 Matrix Login:
+          • Username: {{ matrix_admin_user | default('admin') }}
+          • Password: {{ matrix_admin_password | default('admin123') }}
+          {% if tailscale_ip_address is defined %}
+          • Server: {{ tailscale_ip_address }}
+          {% else %}
+          • Server: [Use Tailscale IP]
+          {% endif %}
+          
+          🔧 Helper Scripts Available:
+          • matrix_diagnostics.sh - Full diagnostic
+          • fix_matrix_config.sh - Auto-fix common issues  
+          • restart_matrix.sh - Safe restart
+          • monitor_matrix.sh - Live monitoring
+          
+          ████████████████████████████████████████████████████████████████████████
+          
+          🔑 IMPORTANT: Save the information above - you'll need it to access your server!
 
   handlers:
     - name: Reload Nginx

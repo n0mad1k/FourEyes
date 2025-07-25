@@ -1,0 +1,59 @@
+# Red Team Chat Server Deployment
+# Enhanced security Matrix homeserver for tactical operations
+
+---
+- name: Deploy Red Team Secure Chat Server
+  hosts: all
+  become: yes
+  gather_facts: yes
+  vars:
+    deployment_type: "redteam-chat"
+    vpn_only_access: true
+    enhanced_security: true
+    covert_mode: true
+
+  tasks:
+    - name: Set deployment name for consistency
+      set_fact:
+        deployment_name: "{{ deployment_name | default('redteam-' + ansible_date_time.epoch[-6:]) }}"
+
+    - name: Display deployment information
+      debug:
+        msg: |
+          ⚔️  Red Team Chat Server Deployment
+          ==================================
+          Deployment Name: {{ deployment_name }}
+          Server Type: Tactical Secure Communications
+          Access Method: VPN-Only + Enhanced Security
+          Features: Matrix + Element + Advanced Op-Sec
+
+    # Include common chat server tasks
+    - include_tasks: ../tasks/common/system-setup.yaml
+    - include_tasks: ../tasks/common/tailscale-setup.yaml
+    - include_tasks: ../tasks/common/matrix-setup.yaml
+    - include_tasks: ../tasks/common/nginx-setup.yaml
+    
+    # Red team specific tasks
+    - include_tasks: ../tasks/redteam/enhanced-security.yaml
+    - include_tasks: ../tasks/redteam/covert-channels.yaml
+    - include_tasks: ../tasks/redteam/tactical-features.yaml
+    
+    # Common completion tasks
+    - include_tasks: ../tasks/common/user-creation.yaml
+    - include_tasks: ../tasks/common/final-status.yaml
+
+  handlers:
+    - name: Reload Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+
+    - name: Restart Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
+
+    - name: Restart Matrix
+      ansible.builtin.service:
+        name: matrix-synapse
+        state: restarted

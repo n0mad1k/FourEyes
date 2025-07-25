@@ -1,24 +1,106 @@
+# FourEyes VPN-Only Matrix/Element Configuration
 server {
-    listen 443 ssl;
+    listen 443 ssl http2;
     server_name {{ matrix_server_name }};
 
+    # Enhanced SSL/TLS Configuration
     ssl_certificate /etc/ssl/certs/nginx-selfsigned.crt;
     ssl_certificate_key /etc/ssl/private/nginx-selfsigned.key;
+    ssl_protocols TLSv1.3 TLSv1.2;
+    ssl_ciphers ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+    ssl_session_tickets off;
+
+    # VPN ACCESS CONTROL - RESTRICT TO TAILSCALE ONLY
+    allow 100.64.0.0/10;    # Primary Tailscale range
+    allow 100.0.0.0/8;      # Extended Tailscale range
+    deny all;               # Block everything else
+    
+    # Security Headers
+    add_header X-Frame-Options SAMEORIGIN always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    
+    # Hide nginx version
+    server_tokens off;
 
     root /var/www/element/element-{{ element_version.stdout }};
     index index.html;
 
-    # Serve Element UI
-    location / {
-        try_files $uri $uri/ =404;
-    }
-
-    # Proxy requests to Matrix Synapse
+    # Matrix API requests
     location /_matrix/ {
         proxy_pass http://localhost:8008;
         proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Real-IP $remote_addr;
         proxy_buffering off;
         client_max_body_size 50M;
     }
+
+    # Well-known Matrix federation endpoints
+    location /.well-known/matrix/server {
+        return 200 '{"m.server": "{{ matrix_server_name }}:443"}';
+        add_header Content-Type application/json;
+        add_header Access-Control-Allow-Origin "*";
+    }
+
+    location /.well-known/matrix/client {
+        return 200 '{"m.homeserver": {"base_url": "https://{{ matrix_server_name }}/"}}';
+        add_header Content-Type application/json;
+        add_header Access-Control-Allow-Origin "*";
+    }
+
+    # Serve Element UI with caching for static assets
+    location / {
+        try_files $uri $uri/ =404;
+        
+        # Cache static assets
+        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+    }
+
+    # Serve CA certificate for client installation
+    location /ca/ {
+        alias /var/www/ca-download/;
+        autoindex on;
+        add_header Content-Type application/x-pem-file;
+        add_header Content-Disposition "attachment";
+    }
+    
+    # Block common attack patterns
+    location ~ /\. {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+    
+    location ~ ~$ {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+    
+    # Enhanced logging
+    access_log /var/log/nginx/foureyes_access.log combined;
+    error_log /var/log/nginx/foureyes_error.log warn;
+}
+
+# Redirect HTTP to HTTPS
+server {
+    listen 80;
+    server_name {{ matrix_server_name }};
+    
+    # VPN ACCESS CONTROL - RESTRICT TO TAILSCALE ONLY
+    allow 100.64.0.0/10;    # Primary Tailscale range
+    allow 100.0.0.0/8;      # Extended Tailscale range
+    deny all;               # Block everything else
+    
+    return 301 https://$server_name$request_uri;
 }

@@ -1,0 +1,65 @@
+# ATAK Integration Chat Server Deployment
+# Matrix homeserver with ATAK-CIV server for military/tactical coordination
+
+---
+- name: Deploy ATAK Integration Chat Server
+  hosts: all
+  become: yes
+  gather_facts: yes
+  vars:
+    deployment_type: "atak-chat"
+    vpn_only_access: true
+    atak_integration: true
+
+  tasks:
+    - name: Set deployment name for consistency
+      set_fact:
+        deployment_name: "{{ deployment_name | default('atak-' + ansible_date_time.epoch[-6:]) }}"
+
+    - name: Display deployment information
+      debug:
+        msg: |
+          🎯 ATAK Integration Chat Server Deployment
+          ==========================================
+          Deployment Name: {{ deployment_name }}
+          Server Type: Military/Tactical Coordination
+          Access Method: VPN-Only + ATAK Integration
+          Features: Matrix + Element + ATAK-CIV + Geospatial Data
+
+    # Include common chat server tasks
+    - include_tasks: ../tasks/common/system-setup.yaml
+    - include_tasks: ../tasks/common/tailscale-setup.yaml
+    - include_tasks: ../tasks/common/matrix-setup.yaml
+    - include_tasks: ../tasks/common/nginx-setup.yaml
+    - include_tasks: ../tasks/common/security-basic.yaml
+    
+    # ATAK specific tasks
+    - include_tasks: ../tasks/atak/atak-server.yaml
+    - include_tasks: ../tasks/atak/geospatial-data.yaml
+    - include_tasks: ../tasks/atak/mission-coordination.yaml
+    - include_tasks: ../tasks/atak/webhook-integration.yaml
+    
+    # Common completion tasks
+    - include_tasks: ../tasks/common/user-creation.yaml
+    - include_tasks: ../tasks/common/final-status.yaml
+
+  handlers:
+    - name: Reload Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+
+    - name: Restart Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
+
+    - name: Restart Matrix
+      ansible.builtin.service:
+        name: matrix-synapse
+        state: restarted
+
+    - name: Restart ATAK
+      ansible.builtin.service:
+        name: atak-server
+        state: restarted

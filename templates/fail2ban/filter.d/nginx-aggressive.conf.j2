@@ -1,0 +1,15 @@
+# Fail2Ban filter for aggressive scanning attempts
+# Blocks aggressive scanners and attack tools
+
+[Definition]
+failregex = ^<HOST> .* "(GET|POST|HEAD) .*(phpMyAdmin|phpmyadmin|pma|mysql|wp-admin|wp-login|admin|administrator|xmlrpc\.php|eval\(|base64_|union.*select|/etc/passwd|/etc/shadow|\.\.\/\.\.\/).* HTTP.*" \d+ .*$
+            ^<HOST> .* "(GET|POST|HEAD) .*(\.php|\.asp|\.jsp|\.cgi).*[\?&](cmd|exec|system|shell|eval|base64_decode|file_get_contents|include|require)=.* HTTP.*" \d+ .*$
+            ^<HOST> .* ".*sqlmap.*" .*$
+            ^<HOST> .* ".*nikto.*" .*$
+            ^<HOST> .* ".*nmap.*" .*$
+            ^<HOST> .* ".*masscan.*" .*$
+            ^<HOST> .* ".*gobuster.*" .*$
+            ^<HOST> .* ".*dirb.*" .*$
+            ^<HOST> .* ".*dirbuster.*" .*$
+
+ignoreregex =

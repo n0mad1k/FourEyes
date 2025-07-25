@@ -1,0 +1,8 @@
+# Fail2Ban filter for Matrix login attempts
+# Blocks repeated failed login attempts to Matrix server
+
+[Definition]
+failregex = ^<HOST> .* "POST /_matrix/client/(r0|v3)/login HTTP.*" (401|403) .*$
+            ^<HOST> .* "POST /_matrix/client/(r0|v3)/register HTTP.*" (401|403) .*$
+
+ignoreregex =
