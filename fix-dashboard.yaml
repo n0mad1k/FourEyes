@@ -1,0 +1,80 @@
+---
+- name: Fix FourEyes Dashboard Issues
+  hosts: element-server
+  become: yes
+  vars_files:
+    - vars.yaml
+  
+  tasks:
+    - name: Check nginx configuration
+      command: nginx -t
+      register: nginx_test
+      failed_when: false
+      
+    - name: Display nginx test results
+      debug:
+        var: nginx_test
+        
+    - name: Ensure foureyes-vpn site is enabled
+      file:
+        src: /etc/nginx/sites-available/foureyes-vpn
+        dest: /etc/nginx/sites-enabled/foureyes-vpn
+        state: link
+      notify: restart nginx
+      
+    - name: Remove conflicting default site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+      notify: restart nginx
+      
+    - name: Check if SSL certificates exist
+      stat:
+        path: "{{ item }}"
+      register: ssl_files
+      with_items:
+        - /etc/ssl/certs/nginx-selfsigned.crt
+        - /etc/ssl/private/nginx-selfsigned.key
+        
+    - name: Display SSL certificate status
+      debug:
+        msg: "SSL file {{ item.item }} exists: {{ item.stat.exists }}"
+      with_items: "{{ ssl_files.results }}"
+      
+    - name: Regenerate self-signed certificates if missing
+      block:
+        - name: Generate new SSL certificate
+          command: >
+            openssl req -x509 -nodes -days 365 -newkey rsa:2048
+            -keyout /etc/ssl/private/nginx-selfsigned.key
+            -out /etc/ssl/certs/nginx-selfsigned.crt
+            -subj "/C=US/ST=State/L=City/O=FourEyes/CN={{ matrix_server_name }}"
+          notify: restart nginx
+      when: not ssl_files.results[0].stat.exists or not ssl_files.results[1].stat.exists
+      
+    - name: Test dashboard accessibility
+      uri:
+        url: "https://{{ matrix_server_name }}:8443"
+        method: GET
+        validate_certs: no
+        status_code: [200, 302]
+      register: dashboard_test
+      failed_when: false
+      
+    - name: Display dashboard test results
+      debug:
+        msg: "Dashboard status: {{ dashboard_test.status | default('Failed to connect') }}"
+        
+    - name: Check nginx processes
+      command: ps aux | grep nginx
+      register: nginx_processes
+      
+    - name: Display nginx processes
+      debug:
+        var: nginx_processes.stdout_lines
+        
+  handlers:
+    - name: restart nginx
+      service:
+        name: nginx
+        state: restarted

@@ -82,7 +82,7 @@
 
         - name: Connect to Tailscale network
           ansible.builtin.shell: |
-            tailscale up --authkey={{ tailscale_auth_key }} --accept-routes --accept-dns=false --hostname={{ deployment_name | default('foureyes-intel') }}
+            tailscale up --authkey={{ tailscale_auth_key }} --accept-routes --accept-dns=false --hostname={{ deployment_name }}
           when: tailscale_auth_key is defined
           register: tailscale_connect
           ignore_errors: yes
@@ -250,7 +250,7 @@
     - name: Copy certificate for client download
       ansible.builtin.copy:
         src: /etc/ssl/certs/nginx-selfsigned.crt
-        dest: "/var/www/ca-download/{{ deployment_name | default('foureyes') }}-ca.pem"
+        dest: "/var/www/ca-download/{{ deployment_name }}-ca.pem"
         mode: '0644'
         remote_src: yes
 
@@ -301,7 +301,7 @@
     - name: Copy certificate as CA for client download
       ansible.builtin.copy:
         src: /etc/ssl/certs/nginx-selfsigned.crt
-        dest: "/var/www/ca-download/{{ deployment_name | default('foureyes') }}-ca.pem"
+        dest: "/var/www/ca-download/{{ deployment_name }}-ca.pem"
         remote_src: yes
         owner: www-data
         group: www-data
@@ -1060,7 +1060,7 @@
           echo "🔗 REQUIRED: Connect via Tailscale VPN:"
           echo "1. Get auth key from: https://login.tailscale.com/admin/settings/keys"
           echo "2. On this server, run:"
-          echo "   sudo tailscale up --authkey=YOUR-AUTH-KEY --accept-routes --accept-dns=false --hostname={{ deployment_name | default('foureyes-intel') }}"
+          echo "   sudo tailscale up --authkey=YOUR-AUTH-KEY --accept-routes --accept-dns=false --hostname={{ deployment_name }}"
           echo "3. Get server Tailscale IP: sudo tailscale ip -4"
           echo "4. Access ONLY via: https://[TAILSCALE-IP]"
           {% else %}
@@ -1070,9 +1070,9 @@
           echo ""
           echo "📥 Download CA certificate (VPN required):"
           {% if tailscale_ip is defined %}
-          echo "wget https://{{ tailscale_ip }}/ca/{{ deployment_name | default('foureyes') }}-ca.pem --no-check-certificate"
+          echo "wget https://{{ tailscale_ip }}/ca/{{ deployment_name }}-ca.pem --no-check-certificate"
           {% else %}
-          echo "wget https://[TAILSCALE-IP]/ca/{{ deployment_name | default('foureyes') }}-ca.pem --no-check-certificate"
+          echo "wget https://[TAILSCALE-IP]/ca/{{ deployment_name }}-ca.pem --no-check-certificate"
           {% endif %}
           echo ""
           echo "🛡️ MAXIMUM SECURITY FEATURES ACTIVE:"
@@ -1102,7 +1102,7 @@
           {% if tailscale_ip_address is not defined %}
           echo "🔗 To connect via Tailscale VPN:"
           echo "1. Get auth key from: https://login.tailscale.com/admin/settings/keys"
-          echo "2. On the server, run: sudo tailscale up --authkey=YOUR-AUTH-KEY --accept-routes --accept-dns=false --hostname={{ deployment_name | default('foureyes-intel') }}"
+          echo "2. On the server, run: sudo tailscale up --authkey=YOUR-AUTH-KEY --accept-routes --accept-dns=false --hostname={{ deployment_name }}"
           echo "3. Or add 'tailscale_auth_key' to your vars.yaml for automatic setup"
           echo "4. Get server Tailscale IP: sudo tailscale ip -4"
           echo "5. Access: https://[TAILSCALE-IP]:8443"
@@ -1112,9 +1112,9 @@
           echo ""
           echo "📥 Download CA certificate:"
           {% if tailscale_ip_address is defined %}
-          echo "wget https://{{ matrix_server_name }}:8443/ca/{{ deployment_name | default('foureyes') }}-ca.pem --no-check-certificate"
+          echo "wget https://{{ matrix_server_name }}:8443/ca/{{ deployment_name }}-ca.pem --no-check-certificate"
           {% else %}
-          echo "wget https://{{ matrix_server_name }}:8443/ca/{{ deployment_name | default('foureyes') }}-ca.pem --no-check-certificate"
+          echo "wget https://{{ matrix_server_name }}:8443/ca/{{ deployment_name }}-ca.pem --no-check-certificate"
           {% endif %}
           echo ""
           echo "🔐 Login Credentials:"

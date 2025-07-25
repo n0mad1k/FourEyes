@@ -256,13 +256,13 @@ def run_ansible_playbook(playbook_path, vars_file, deployment_name, inventory_fi
             print("🌟" * 71)
         
         # Display the completion information prominently
-        print("\n" + "📊" * 25 + " QUICK ACCESS INFO " + "📊" * 25)
+        print("\n" + "�" * 25 + " QUICK ACCESS INFO " + "�" * 25)
         print(f"🏷️  Deployment Name: {deployment_name}")
         print(f"📋 Log File: {log_file}")
         print("🔍 Key information extracted above from deployment output")
         print("📁 Helper scripts deployed to: /root/matrix-helpers/")
-        print("💡 If dashboard shows Element login instead of dashboard, run: python3 setup.py --fix-dashboard")
-        print("📊" * 71 + "\n")
+        print("💡 If Matrix UI hangs, SSH to server and run: sudo fix_matrix_config.sh")
+        print("�" * 71 + "\n")
         
     except subprocess.CalledProcessError as e:
         print(f"❌ An error occurred while running the playbook: {e}")
@@ -270,55 +270,55 @@ def run_ansible_playbook(playbook_path, vars_file, deployment_name, inventory_fi
         exit(1)
 
 def diagnose_deployment(vars_file):
-    """Diagnose common deployment issues"""
-    print(f"\n{Colors.HEADER}═══ FourEyes Deployment Diagnostics ═══{Colors.ENDC}")
-    
-    if not os.path.exists(vars_file):
-        print(f"{Colors.FAIL}No configuration file found at {vars_file}{Colors.ENDC}")
-        return
+        """Diagnose common deployment issues"""
+        print(f"\n{Colors.HEADER}═══ FourEyes Deployment Diagnostics ═══{Colors.ENDC}")
         
-    with open(vars_file, 'r') as f:
-        config = yaml.safe_load(f)
+        if not os.path.exists(vars_file):
+            print(f"{Colors.FAIL}No configuration file found at {vars_file}{Colors.ENDC}")
+            return
+            
+        with open(vars_file, 'r') as f:
+            config = yaml.safe_load(f)
+            
+        server_name = config.get('matrix_server_name')
+        if not server_name:
+            print(f"{Colors.FAIL}No matrix_server_name found in configuration{Colors.ENDC}")
+            return
+            
+        print(f"{Colors.OKBLUE}Checking deployment for: {server_name}{Colors.ENDC}")
         
-    server_name = config.get('matrix_server_name')
-    if not server_name:
-        print(f"{Colors.FAIL}No matrix_server_name found in configuration{Colors.ENDC}")
-        return
+        # Check dashboard at port 8443
+        print(f"\n{Colors.OKCYAN}Testing Dashboard (Port 8443):{Colors.ENDC}")
+        dashboard_cmd = f"curl -k -I https://{server_name}:8443 2>/dev/null | head -1"
+        print(f"Running: {dashboard_cmd}")
         
-    print(f"{Colors.OKBLUE}Checking deployment for: {server_name}{Colors.ENDC}")
-    
-    # Check dashboard at port 8443
-    print(f"\n{Colors.OKCYAN}Testing Dashboard (Port 8443):{Colors.ENDC}")
-    dashboard_cmd = f"curl -k -I https://{server_name}:8443 2>/dev/null | head -1"
-    print(f"Running: {dashboard_cmd}")
-    
-    # Check Matrix server
-    print(f"\n{Colors.OKCYAN}Testing Matrix Server:{Colors.ENDC}")
-    matrix_cmd = f"curl -k https://{server_name}/_matrix/static/ 2>/dev/null | head -5"
-    print(f"Running: {matrix_cmd}")
-    
-    # Provide fix suggestions
-    print(f"\n{Colors.HEADER}Suggested Fixes:{Colors.ENDC}")
-    print(f"1. Check nginx configuration: sudo nginx -t")
-    print(f"2. Restart nginx: sudo systemctl restart nginx")
-    print(f"3. Check if sites are enabled: ls -la /etc/nginx/sites-enabled/")
-    print(f"4. Check nginx logs: sudo tail -f /var/log/nginx/error.log")
-    print(f"5. Verify SSL certificates: sudo openssl x509 -in /etc/ssl/certs/nginx-selfsigned.crt -text -noout")
-    
+        # Check Matrix server
+        print(f"\n{Colors.OKCYAN}Testing Matrix Server:{Colors.ENDC}")
+        matrix_cmd = f"curl -k https://{server_name}/_matrix/static/ 2>/dev/null | head -5"
+        print(f"Running: {matrix_cmd}")
+        
+        # Provide fix suggestions
+        print(f"\n{Colors.HEADER}Suggested Fixes:{Colors.ENDC}")
+        print(f"1. Check nginx configuration: sudo nginx -t")
+        print(f"2. Restart nginx: sudo systemctl restart nginx")
+        print(f"3. Check if sites are enabled: ls -la /etc/nginx/sites-enabled/")
+        print(f"4. Check nginx logs: sudo tail -f /var/log/nginx/error.log")
+        print(f"5. Verify SSL certificates: sudo openssl x509 -in /etc/ssl/certs/nginx-selfsigned.crt -text -noout")
+        
 def fix_dashboard_issue(vars_file, base_dir):
-    """Fix common dashboard configuration issues"""
-    print(f"\n{Colors.HEADER}═══ FourEyes Dashboard Fix ═══{Colors.ENDC}")
-    
-    if not os.path.exists(vars_file):
-        print(f"{Colors.FAIL}No configuration file found. Run setup first.{Colors.ENDC}")
-        return
+        """Fix common dashboard configuration issues"""
+        print(f"\n{Colors.HEADER}═══ FourEyes Dashboard Fix ═══{Colors.ENDC}")
         
-    print(f"{Colors.OKBLUE}Generating dashboard fix playbook...{Colors.ENDC}")
-    
-    # Use the same host as the main deployment (element-server)
-    fix_playbook_content = """---
+        if not os.path.exists(vars_file):
+            print(f"{Colors.FAIL}No configuration file found. Run setup first.{Colors.ENDC}")
+            return
+            
+        print(f"{Colors.OKBLUE}Generating dashboard fix playbook...{Colors.ENDC}")
+        
+        # Create a small fix playbook
+        fix_playbook_content = """---
 - name: Fix FourEyes Dashboard Issues
-  hosts: element-server
+  hosts: "{{ target_host | default('localhost') }}"
   become: yes
   vars_files:
     - vars.yaml
@@ -397,27 +397,17 @@ def fix_dashboard_issue(vars_file, base_dir):
         name: nginx
         state: restarted
 """
-    
-    fix_playbook_path = os.path.join(base_dir, "fix-dashboard.yaml")
-    with open(fix_playbook_path, 'w') as f:
-        f.write(fix_playbook_content)
         
-    print(f"{Colors.OKGREEN}Fix playbook created: {fix_playbook_path}{Colors.ENDC}")
-    print(f"{Colors.WARNING}To run this playbook on the remote server, use the same inventory as your main deployment (e.g., -i inventory or -i localhost, if dynamic).\nIf you used a dynamic inventory, ensure 'element-server' is present.\nExample:\n  ansible-playbook -i localhost, fix-dashboard.yaml -e @vars.yaml\n{Colors.ENDC}")
-    
-    if input("Run the dashboard fix now? (y/N): ").strip().lower() in ['y', 'yes']:
-        run_ansible_playbook(fix_playbook_path, vars_file, os.path.basename(fix_playbook_path).replace('.yaml', ''))
+        fix_playbook_path = os.path.join(base_dir, "fix-dashboard.yaml")
+        with open(fix_playbook_path, 'w') as f:
+            f.write(fix_playbook_content)
+            
+        print(f"{Colors.OKGREEN}Fix playbook created: {fix_playbook_path}{Colors.ENDC}")
+        
+        if input("Run the dashboard fix now? (y/N): ").strip().lower() in ['y', 'yes']:
+            run_ansible_playbook(fix_playbook_path, vars_file, os.path.basename(fix_playbook_path).replace('.yaml', ''))
 
 def main():
-    # Add command line options for specific functionality
-    if len(sys.argv) > 1:
-        if "--fix-dashboard" in sys.argv:
-            fix_dashboard_issue("vars.yaml", ".")
-            return
-        elif "--diagnose" in sys.argv:
-            diagnose_deployment("vars.yaml")
-            return
-    
     # Check if any arguments were provided
     if len(sys.argv) == 1:
         # No arguments provided, run interactive setup
@@ -428,8 +418,6 @@ def main():
         parser.add_argument("--key-name", help="The name of the SSH key to generate. If not provided, a random name will be generated.")
         parser.add_argument("--playbook", required=True, help="The path to the Ansible playbook.")
         parser.add_argument("--vars-file", required=True, help="The path to the Ansible vars file.")
-        parser.add_argument("--fix-dashboard", action='store_true', help="Fix dashboard configuration issues")
-        parser.add_argument("--diagnose", action='store_true', help="Diagnose deployment issues")
 
         args = parser.parse_args()
         
@@ -446,6 +434,10 @@ def main():
     # If you need to update the vars.yml file or do any other modifications, add that logic here
 
     run_ansible_playbook(playbook_path, vars_file, key_name)
+
+    # Diagnostic and fix capabilities
+    diagnose_deployment(vars_file)
+    fix_dashboard_issue(vars_file, os.path.dirname(playbook_path))
 
 if __name__ == "__main__":
     main()

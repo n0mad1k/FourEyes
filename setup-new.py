@@ -315,10 +315,10 @@ def fix_dashboard_issue(vars_file, base_dir):
         
     print(f"{Colors.OKBLUE}Generating dashboard fix playbook...{Colors.ENDC}")
     
-    # Use the same host as the main deployment (element-server)
+    # Create a small fix playbook
     fix_playbook_content = """---
 - name: Fix FourEyes Dashboard Issues
-  hosts: element-server
+  hosts: "{{ target_host | default('localhost') }}"
   become: yes
   vars_files:
     - vars.yaml
@@ -403,7 +403,6 @@ def fix_dashboard_issue(vars_file, base_dir):
         f.write(fix_playbook_content)
         
     print(f"{Colors.OKGREEN}Fix playbook created: {fix_playbook_path}{Colors.ENDC}")
-    print(f"{Colors.WARNING}To run this playbook on the remote server, use the same inventory as your main deployment (e.g., -i inventory or -i localhost, if dynamic).\nIf you used a dynamic inventory, ensure 'element-server' is present.\nExample:\n  ansible-playbook -i localhost, fix-dashboard.yaml -e @vars.yaml\n{Colors.ENDC}")
     
     if input("Run the dashboard fix now? (y/N): ").strip().lower() in ['y', 'yes']:
         run_ansible_playbook(fix_playbook_path, vars_file, os.path.basename(fix_playbook_path).replace('.yaml', ''))
